@@ -146,7 +146,7 @@ export function workoutSummary(group) {
 }
 
 function makeGroup(id, values = {}) {
-  const names = values.athleteNames || ['Maya Chen', 'Jordan Davis', 'Alex Rivera', 'Sam Brooks', 'Taylor Kim', 'Casey Morgan'];
+  const names = values.athleteNames || [ 'Johnny Forte', 'Lorenzo Pantaleo', 'Arthur Sweeny', 'Aiden Victorio', 'Nick Lawrence', 'Santino Jimenez'];
   if (!Array.isArray(names) || !names.length || names.some(n => !String(n).trim())) throw new Error('Add at least one athlete with a name.');
   const mode = values.mode === 'free' ? 'free' : 'planned';
   if (values.workoutText != null && typeof values.workoutText !== 'string') throw new Error('Enter the workout as text.');
@@ -168,9 +168,9 @@ function makeGroup(id, values = {}) {
 
 export function createSession(now = Date.now()) {
   return {id: `session-${now}`, name: 'Afternoon practice', createdAt: now,
-    groups: [makeGroup('group-a', {name: 'Distance crew', workoutText: SAMPLE_WORKOUT}), makeGroup('group-b', {
-      name: '400m crew', color: 'orange', sets: 2, repsPerSet: 4, distance: 400,
-      restSeconds: 60, setRestSeconds: 360, athleteNames: ['Riley Parker', 'Jamie Lee', 'Avery Wilson', 'Morgan Reed'],
+    groups: [makeGroup('group-a', {name: 'Distance', workoutText: SAMPLE_WORKOUT}), makeGroup('group-b', {
+      name: 'Mid Distance', color: 'orange', sets: 2, repsPerSet: 4, distance: 400,
+      restSeconds: 60, setRestSeconds: 360, athleteNames: ['Nick Lawrence', 'Daniel Sanchez', 'Eddie Panniccia', 'Myles Taylor', 'Ethan Wu'],
     })], activeGroupId: 'group-a'};
 }
 
