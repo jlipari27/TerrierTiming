@@ -43,6 +43,7 @@ export const SAMPLE_WORKOUT = '3200 tempo\n4min rest\n400-600-400-200 2min rest\
 const MAX_RUNS = 1000;
 const durationSource = '(\\d+(?:\\.\\d+)?)\\s*(minutes?|mins?|min|m|seconds?|secs?|sec|s)';
 const distanceSource = '\\d+(?:\\.\\d+)?\\s*(?:km|m)?';
+export const isRestLine = text => new RegExp(`^${durationSource}\\s*(?:rest|break|brea|recovery)$`, 'i').test(String(text).trim());
 const lineError = (line, message) => new Error(`Line ${line}: ${message}`);
 const distanceLabel = distance => `${Number(distance.toFixed(3))}m`;
 const MAX_SPLITS = 40;
@@ -89,6 +90,12 @@ export function parseWorkout(text) {
     let sets = 1, repetitions = 1, repRest = 0, setRest = null;
     const setMatch = input.match(/^(\d+)\s+sets?\s+(?:of\s+)?/i);
     if (setMatch) {sets = Number(setMatch[1]); input = input.slice(setMatch[0].length).trim();}
+    let inlineBreak = null;
+    const breakMatch = input.match(new RegExp(`[,;]\\s*${durationSource}\\s*(?:break|brea)$`, 'i'));
+    if (breakMatch) {
+      inlineBreak = durationSeconds(breakMatch[1], breakMatch[2], line);
+      input = input.slice(0, breakMatch.index).trim();
+    }
     const betweenMatch = input.match(new RegExp(`[,;]?\\s*${durationSource}\\s+(?:rest\\s+)?between\\s+sets$`, 'i'));
     if (betweenMatch) {
       if (!setMatch) throw lineError(line, 'Use “2 sets of 4x400 1min rest, 6min between sets” for set recovery.');
@@ -140,6 +147,7 @@ export function parseWorkout(text) {
           repeatRestSeconds: repRest});
       }
     }
+    if (inlineBreak != null) steps.at(-1).restAfterSeconds = inlineBreak;
     lines.push({text: raw.trim(), blocks: lineBlocks, restText: ''});
     pendingRest = null;
   }
@@ -192,13 +200,14 @@ function makeGroup(id, values = {}) {
   const plan = workoutText && mode === 'planned' ? parseWorkout(workoutText).steps : null;
   return {
     id, name: String(values.name || 'New group').trim(), color: values.color === 'orange' ? 'orange' : 'green',
+    sheetColor: ['blue', 'red', 'yellow'].includes(values.sheetColor) ? values.sheetColor : values.color === 'orange' ? 'red' : 'blue',
     mode, workoutText, plan,
     sets: Math.floor(number(values.sets, 2, 1, 20)),
     repsPerSet: Math.floor(number(values.repsPerSet, 4, 1, 50)),
     distance: number(values.distance, 400, 1, 100000),
     restSeconds: number(values.restSeconds, 60), setRestSeconds: number(values.setRestSeconds, 360),
     recoveryMode: values.recoveryMode === 'manual' ? 'manual' : 'auto',
-    athletes: names.map((name, i) => ({id: `${id}-athlete-${i + 1}`, name: String(name).trim(), pack: null, mods: {}})),
+    athletes: names.map((name, i) => ({id: `${id}-athlete-${i + 1}`, name: String(name).trim(), pack: null, mods: {}, goals: {}})),
     packs: [],
     repIndex: 0, extraReps: 0, records: [freshRep(0)], recovery: null, completed: false,
   };
@@ -209,7 +218,26 @@ export function createSession(now = Date.now()) {
     groups: [makeGroup('group-a', {name: 'Distance', workoutText: SAMPLE_WORKOUT}), makeGroup('group-b', {
       name: 'Mid Distance', color: 'orange', sets: 2, repsPerSet: 4, distance: 400,
       restSeconds: 60, setRestSeconds: 360, athleteNames: ['Nick Lawrence', 'Daniel Sanchez', 'Eddie Panniccia', 'Myles Taylor', 'Ethan Wu'],
-    })], activeGroupId: 'group-a', prefs: {finishedToBottom: true}};
+    })], activeGroupId: 'group-a', prefs: {finishedToBottom: true, showGoals: true}};
+}
+
+export const plannedDistances = group => { const seen = []; for (const step of getPlan(group)) if (!seen.includes(step.distance)) seen.push(step.distance); return seen; };
+/** A runner's goal (seconds) for a run, looked up by the run's planned distance. */
+export function goalFor(group, athlete, index = group.repIndex) {
+  const goal = athlete.goals?.[getStep(group, index)?.distance];
+  return typeof goal === 'number' ? goal : null;
+}
+const clockText = seconds => { const t = Math.round(seconds * 10) / 10, m = Math.floor(t / 60), sec = t - m * 60; return `${m}:${Number.isInteger(sec) ? String(sec).padStart(2, '0') : sec.toFixed(1).padStart(4, '0')}`; };
+/** 'clock' gives 1:15; 'sheet' gives 75 under 100 seconds and 6:40 above, the way coaches write them. */
+export function goalText(seconds, style = 'clock') {
+  if (seconds == null) return '';
+  const t = Math.round(seconds * 10) / 10;
+  return style === 'sheet' && t < 100 ? String(t) : clockText(t);
+}
+export function goalString(group, athlete) {
+  const list = plannedDistances(group).map(d => athlete.goals?.[d]);
+  let last = list.length - 1; while (last >= 0 && typeof list[last] !== 'number') last--;
+  return list.slice(0, last + 1).map(g => typeof g === 'number' ? goalText(g, 'sheet') : '-').join(', ');
 }
 
 export function getGroup(state, id = state.activeGroupId) {
@@ -280,7 +308,7 @@ export function act(state, action, now = Date.now()) {
     next.completed = true; return next;
   }
   if (action.type === 'SET_PREF') {
-    if (!['finishedToBottom'].includes(action.key)) throw new Error('Unknown setting.');
+    if (!['finishedToBottom', 'showGoals'].includes(action.key)) throw new Error('Unknown setting.');
     next.prefs = {...(next.prefs || {}), [action.key]: !!action.value}; return next;
   }
   const group = getGroup(next, action.groupId);
@@ -310,7 +338,7 @@ export function act(state, action, now = Date.now()) {
     if (group.athletes.length >= 50) throw new Error('Use up to 50 runners per group.');
     const used = group.athletes.map(a => Number(a.id.split('-athlete-')[1]) || 0);
     const id = `${group.id}-athlete-${Math.max(0, ...used) + 1}`;
-    group.athletes.push({id, name, pack: null, mods: {}});
+    group.athletes.push({id, name, pack: null, mods: {}, goals: {}});
     for (const r of group.records) if (r.index < group.repIndex || r.closed) {r.skipped.push(id); r.modSkipped.push(id);}
     return next;
   }
@@ -326,6 +354,29 @@ export function act(state, action, now = Date.now()) {
     if (action.beforeId) at = group.athletes.findIndex(a => a.id === action.beforeId);
     else if (action.afterId) at = group.athletes.findIndex(a => a.id === action.afterId) + 1;
     group.athletes.splice(at < 0 ? group.athletes.length : at, 0, athlete);
+    return next;
+  }
+  if (action.type === 'MOVE_PACK') {
+    const index = group.packs.findIndex(p => p.id === action.packId);
+    if (index < 0) throw new Error('Pack not found.');
+    const [pack] = group.packs.splice(index, 1);
+    let at;
+    if (action.dir) at = Math.max(0, Math.min(group.packs.length, index + (action.dir < 0 ? -1 : 1)));
+    else if (action.beforeId) at = group.packs.findIndex(p => p.id === action.beforeId);
+    else at = group.packs.length;
+    group.packs.splice(at < 0 ? group.packs.length : at, 0, pack);
+    return next;
+  }
+  if (action.type === 'SET_GOALS') {
+    const athlete = group.athletes.find(a => a.id === action.athleteId);
+    if (!athlete) throw new Error('Athlete not found.');
+    athlete.goals ??= {};
+    for (const [key, value] of Object.entries(action.goals || {})) {
+      const distance = Number(key);
+      if (!(distance > 0)) throw new Error('That distance is not valid.');
+      if (value == null || value === '') delete athlete.goals[distance];
+      else { const seconds = typeof value === 'number' ? value : timeSeconds(value); athlete.goals[distance] = number(seconds, NaN, 1, 86400); }
+    }
     return next;
   }
   if (action.type === 'SET_PACKS') {
@@ -370,6 +421,7 @@ export function act(state, action, now = Date.now()) {
       const old = group.athletes.find(o => o.name === athlete.name);
       if (!old) continue;
       if (old.pack && updated.packs.some(p => p.id === old.pack)) athlete.pack = old.pack;
+      athlete.goals = clone(old.goals || {});
       if (sameWorkout) athlete.mods = clone(old.mods || {});
     }
     syncPlannedSkips(updated, updated.records[0]);
@@ -622,4 +674,154 @@ export function exportCsv(state) {
   }
   rows.push([], ['* manual entry', 'DNS = did not run', 'Skip = planned skip']);
   return rows.map(row => row.map(csvCell).join(',')).join('\r\n');
+}
+
+
+// ---------- Practice text: groups, goals and per-runner changes ----------
+const COLOR_WORDS = {blue: 'blue', red: 'red', yellow: 'yellow', green: 'blue', orange: 'red', gold: 'yellow'};
+export const PRACTICE_EXAMPLE = `Distance | blue
+4x400 45s rest, 6min break
+2000, 6min break
+2x300 2.5min rest
+Johnny | 75, 6:40, 47
+Arthur | 77, 7:00, 50 | 2000 to 1600
+Nick | 77, 7:05, 52 | skip 300
+
+Freshmen | yellow
+4x400 60s rest
+Landon | 85 | skip rep 3`;
+function timeSeconds(text) {
+  const t = String(text).trim();
+  if (!/^(?:\d+:)?\d+(?:\.\d{1,3})?$/.test(t)) return NaN;
+  const parts = t.split(':').map(Number);
+  return parts.length === 2 ? parts[0] * 60 + parts[1] : parts[0];
+}
+
+/** Turn pasted text into groups. A name line starts a group, workout lines use the normal grammar, and “Name | goals | changes” lines are runners. */
+export function parsePractice(text) {
+  if (typeof text !== 'string' || !text.trim()) throw new Error('Paste a practice first.');
+  if (text.length > 20000) throw new Error('That practice is too long.');
+  const groups = [];
+  let cur = null;
+  const begin = (name, color) => { cur = {name, sheetColor: color || null, lines: [], runners: []}; groups.push(cur); };
+  for (const [i, raw] of text.split(/\r?\n/).entries()) {
+    const lineNo = i + 1, line = raw.trim().replace(/×/g, 'x');
+    if (!line) continue;
+    const bars = line.split('|').map(part => part.trim());
+    const colorWord = bars.length === 2 ? COLOR_WORDS[bars[1].toLowerCase()] : null;
+    if (bars.length > 1 && !colorWord) {
+      if (!cur) begin('Practice');
+      if (!bars[0]) throw lineError(lineNo, 'Put the runner’s name first, like “Johnny | 75, 6:40, 47”.');
+      cur.runners.push({lineNo, name: bars[0], segments: bars.slice(1)});
+      continue;
+    }
+    if (isRestLine(line)) {
+      if (!cur || !cur.lines.length) throw lineError(lineNo, 'Add a running line before this recovery.');
+      if (cur.runners.length) throw lineError(lineNo, 'Put the workout lines before the runner list.');
+      cur.lines.push(line);
+      continue;
+    }
+    let isWorkout = false;
+    try { parseWorkout(line); isWorkout = true; } catch { /* not a workout line, so it names a group */ }
+    if (isWorkout) {
+      if (!cur) begin('Practice');
+      if (cur.runners.length) throw lineError(lineNo, 'Put the workout lines before the runner list, or start a new group with a name line.');
+      cur.lines.push(line);
+      continue;
+    }
+    begin(bars[0] || line, colorWord);
+  }
+  const out = [];
+  for (const g of groups) {
+    if (!g.lines.length && !g.runners.length) continue;
+    if (!g.lines.length) throw new Error(`“${g.name}” needs at least one workout line.`);
+    if (!g.runners.length) throw new Error(`“${g.name}” needs at least one runner, like “Johnny | 75, 6:40, 47”.`);
+    try { parseWorkout(g.lines.join('\n')); } catch (err) { throw new Error(`${g.name}: ${err.message.replace(/^Line (\d+)/, (_, n) => `workout line ${n}`)}`); }
+    out.push({name: g.name, sheetColor: g.sheetColor, workoutText: g.lines.join('\n'), runners: g.runners.map(parseRunner)});
+  }
+  if (!out.length) throw new Error('Add a group with a workout and runners.');
+  return {groups: out};
+}
+
+function parseRunner(r) {
+  const goals = [], changes = [];
+  for (const segment of r.segments) {
+    if (!segment) continue;
+    if (/\bto\b|\bskip\b/i.test(segment)) {
+      for (const item of segment.split(/[;,]/).map(x => x.trim()).filter(Boolean)) {
+        let m;
+        if ((m = item.match(/^(\d+(?:\.\d+)?)\s*m?\s*to\s*(\d+(?:\.\d+)?)\s*m?$/i))) changes.push({kind: 'distance', from: Number(m[1]), to: Number(m[2])});
+        else if ((m = item.match(/^skip\s+(?:rep|run|#)\s*(\d+)$/i))) changes.push({kind: 'skip-run', run: Number(m[1])});
+        else if ((m = item.match(/^skip\s+(\d+(?:\.\d+)?)\s*m?$/i))) changes.push({kind: 'skip-distance', distance: Number(m[1])});
+        else throw lineError(r.lineNo, `Didn’t understand “${item}”. Try “2000 to 1600”, “skip 300”, or “skip rep 3”.`);
+      }
+    } else {
+      for (const item of segment.split(',').map(x => x.trim()).filter(Boolean)) {
+        const m = item.match(/^(\d+(?:\.\d+)?)\s*=\s*(.+)$/);
+        const seconds = timeSeconds(m ? m[2] : item);
+        if (!(seconds > 0)) throw lineError(r.lineNo, `“${item}” isn’t a goal time. Use seconds (75) or minutes:seconds (6:40).`);
+        goals.push({distance: m ? Number(m[1]) : null, seconds});
+      }
+    }
+  }
+  return {lineNo: r.lineNo, name: r.name, goals, changes};
+}
+
+/** Positional goals map onto the workout's distinct distances, in order of first appearance. */
+function applyRunner(group, spec) {
+  const athlete = group.athletes.find(a => a.name === spec.name), plan = getPlan(group), distinct = plannedDistances(group);
+  const positional = spec.goals.filter(g => g.distance == null);
+  if (positional.length > distinct.length) throw lineError(spec.lineNo, `${spec.name} has ${positional.length} goal paces but this workout has ${distinct.length} different distance${distinct.length === 1 ? '' : 's'} (${distinct.join(', ')}).`);
+  positional.forEach((g, i) => { athlete.goals[distinct[i]] = g.seconds; });
+  for (const g of spec.goals) if (g.distance != null) athlete.goals[g.distance] = g.seconds;
+  for (const c of spec.changes) {
+    if (c.kind === 'skip-run') {
+      if (c.run < 1 || c.run > plan.length) throw lineError(spec.lineNo, `${spec.name}: this workout only has ${plan.length} runs.`);
+      athlete.mods[c.run - 1] = {skip: true};
+      continue;
+    }
+    const wanted = c.kind === 'distance' ? c.from : c.distance, hits = plan.filter(step => step.distance === wanted);
+    if (!hits.length) throw lineError(spec.lineNo, `${spec.name}: there is no ${wanted}m run in this workout (${distinct.join(', ')}).`);
+    for (const step of hits) athlete.mods[step.index] = c.kind === 'distance' ? {distance: c.to} : {skip: true};
+  }
+}
+
+/** A brand-new session built from parsed practice text. */
+export function createSessionFromPractice(practice, {name = 'Practice', now = Date.now(), prefs} = {}) {
+  const palette = ['blue', 'red', 'yellow'];
+  const groups = practice.groups.map((spec, i) => {
+    const sheetColor = spec.sheetColor || palette[i % 3];
+    const group = makeGroup(`group-${i + 1}`, {name: spec.name, workoutText: spec.workoutText, athleteNames: spec.runners.map(r => r.name), sheetColor, color: sheetColor === 'blue' ? 'green' : 'orange'});
+    if (new Set(group.athletes.map(a => a.name)).size !== group.athletes.length) throw new Error(`${spec.name}: each runner’s name should appear once.`);
+    for (const runner of spec.runners) applyRunner(group, runner);
+    group.records[0] = freshRepFor(group, 0);
+    return group;
+  });
+  return {id: `session-${now}`, name: String(name || 'Practice').trim() || 'Practice', createdAt: now, groups, activeGroupId: groups[0].id, prefs: {finishedToBottom: true, showGoals: true, ...(prefs || {})}};
+}
+
+// ---------- Everything the Google Sheet needs for one group ----------
+export function buildSheetPayload(state, groupId) {
+  const group = getGroup(state, groupId), created = new Date(state.createdAt), pad = n => String(n).padStart(2, '0');
+  const md = `${pad(created.getMonth() + 1)}-${pad(created.getDate())}`;
+  const n = group.mode === 'free' ? Math.max(1, group.repIndex + 1) : totalReps(group);
+  const recorded = new Set(group.records.filter(touched).map(r => r.index));
+  const workout = group.workoutText ? group.workoutText.split(/\r?\n/).map(l => l.trim()).filter(Boolean) : [workoutSummary(group)];
+  return {
+    action: 'results', md, date: `${created.getFullYear()}-${md}`, session: state.name,
+    group: {key: group.name, name: group.name, color: group.sheetColor || 'blue', workout, complete: !!group.completed,
+      cols: Array.from({length: n}, (_, i) => ({label: String(getStep(group, i)?.distance ?? group.distance)})),
+      athletes: group.athletes.map(a => ({
+        name: a.name, goal: goalString(group, a), pack: (group.packs || []).find(p => p.id === a.pack)?.name ?? '',
+        cells: Array.from({length: n}, (_, i) => {
+          const rec = group.records.find(r => r.index === i), f = rec?.finishes[a.id], mine = athletePlan(group, a, i), notes = [];
+          if (mine.modified && !mine.skip) notes.push(`${Number(mine.distance.toFixed(3))}m`);
+          const splits = (rec?.splits?.[a.id] || []).map(sp => shortTime(sp.ms));
+          if (splits.length) notes.push(`splits ${splits.join(' / ')}`);
+          if (f?.manual) notes.push('manual entry');
+          const skipped = rec?.skipped.includes(a.id);
+          return {s: f ? Math.round(f.ms / 10) / 100 : null, st: f ? 'ok' : skipped ? ((rec.modSkipped || []).includes(a.id) ? 'skip' : 'dns') : recorded.has(i) ? 'missing' : '', note: notes.join(' · ')};
+        }),
+      }))},
+  };
 }
