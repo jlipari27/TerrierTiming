@@ -1,10 +1,37 @@
 /** Pure timing state: every transition uses wall-clock timestamps, never tick counts. */
-const freshRep = index => ({index, starts: {}, finishes: {}, skipped: [], unassigned: [], splits: {}, closed: false});
+const freshRep = index => ({index, starts: {}, finishes: {}, skipped: [], modSkipped: [], unassigned: [], splits: {}, closed: false});
 const clone = value => JSON.parse(JSON.stringify(value));
 const has = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 const totalReps = group => getPlan(group).length;
 const isFinal = group => group.mode === 'planned' && group.repIndex >= totalReps(group) - 1;
-const touched = rep => rep.closed || Object.keys(rep.starts).length || Object.keys(rep.finishes).length || rep.skipped.length || rep.unassigned.length;
+const plannedSkips = rep => rep.modSkipped || [];
+const touched = rep => rep.closed || Object.keys(rep.starts).length || Object.keys(rep.finishes).length || rep.skipped.some(id => !plannedSkips(rep).includes(id)) || rep.unassigned.length;
+const MAX_PACKS = 8;
+
+/** A runner's plan for one run: the group's distance unless the coach changed it or skipped it. */
+export function athletePlan(group, athlete, index = group.repIndex) {
+  const step = getStep(group, index), mod = athlete.mods?.[index] || null;
+  const planned = step?.distance ?? group.distance;
+  return {planned, distance: mod?.distance ?? planned, skip: !!mod?.skip, modified: !!(mod && (mod.skip || mod.distance != null && mod.distance !== planned))};
+}
+
+/** A fresh rep for this group, with any planned skips already applied. */
+function freshRepFor(group, index) {
+  const rep = freshRep(index);
+  for (const athlete of group.athletes) if (athlete.mods?.[index]?.skip) {rep.skipped.push(athlete.id); rep.modSkipped.push(athlete.id);}
+  return rep;
+}
+
+/** Re-apply planned skips to an open rep after a runner's plan changes. */
+function syncPlannedSkips(group, rep) {
+  if (rep.closed) return;
+  rep.modSkipped ??= [];
+  for (const athlete of group.athletes) {
+    const wants = !!athlete.mods?.[rep.index]?.skip, planned = rep.modSkipped.includes(athlete.id);
+    if (wants && !planned && !has(rep.starts, athlete.id) && !has(rep.finishes, athlete.id) && !rep.skipped.includes(athlete.id)) {rep.skipped.push(athlete.id); rep.modSkipped.push(athlete.id);}
+    else if (!wants && planned) {rep.skipped = rep.skipped.filter(id => id !== athlete.id); rep.modSkipped = rep.modSkipped.filter(id => id !== athlete.id);}
+  }
+}
 const completeRep = (group, rep) => group.athletes.every(a => has(rep.finishes, a.id) || rep.skipped.includes(a.id));
 const number = (value, fallback, min = 0, max = 86400) => {
   const result = value == null ? fallback : Number(value);
@@ -43,7 +70,7 @@ function durationSeconds(amount, unit, line) {
 export function parseWorkout(text) {
   if (typeof text !== 'string' || !text.trim()) throw new Error('Enter a workout, for example “4x400 1min rest”.');
   if (text.length > 8000) throw new Error('Keep the workout under 8,000 characters.');
-  const steps = [], blocks = [];
+  const steps = [], blocks = [], lines = [];
   let pendingRest = null;
   for (const [lineIndex, raw] of text.split(/\r?\n/).entries()) {
     const line = lineIndex + 1;
@@ -54,6 +81,7 @@ export function parseWorkout(text) {
       if (!steps.length) throw lineError(line, 'Add a running block before recovery.');
       if (pendingRest != null) throw lineError(line, 'Combine consecutive recovery lines into one duration.');
       steps.at(-1).restAfterSeconds = durationSeconds(restOnly[1], restOnly[2], line);
+      lines.at(-1).restText = raw.trim();
       pendingRest = line;
       continue;
     }
@@ -95,10 +123,12 @@ export function parseWorkout(text) {
       return distance;
     });
     const count = distances.length * repetitions;
+    const lineBlocks = [];
     if (!sets || !repetitions || sets * count + steps.length > MAX_RUNS) throw lineError(line, 'Use at least one run and no more than 1,000 runs per workout.');
     const baseTitle = `${repetitions > 1 ? `${repetitions} × ` : ''}${distances.length === 1 ? distanceLabel(distances[0]) : `${distances.join('–')}m`}${description ? ` ${description}` : ''}`;
     for (let set = 0; set < sets; set++) {
       const blockIndex = blocks.length;
+      lineBlocks.push(blockIndex);
       const blockTitle = sets > 1 ? `Set ${set + 1} · ${baseTitle}` : baseTitle;
       const startIndex = steps.length;
       blocks.push({title: blockTitle, startIndex, count});
@@ -110,12 +140,13 @@ export function parseWorkout(text) {
           repeatRestSeconds: repRest});
       }
     }
+    lines.push({text: raw.trim(), blocks: lineBlocks, restText: ''});
     pendingRest = null;
   }
   if (!steps.length) throw new Error('Add at least one running block.');
   if (pendingRest != null) throw lineError(pendingRest, 'Add the next running block after this recovery, or remove the final recovery line.');
   steps.at(-1).restAfterSeconds = 0;
-  return {steps, blocks, title: blocks.map(block => block.title).join(' → ')};
+  return {steps, blocks, lines, title: blocks.map(block => block.title).join(' → ')};
 }
 
 /** Legacy set-based sessions remain readable alongside mixed plans. */
@@ -137,6 +168,12 @@ export function getStep(group, index = group.repIndex) {
   if (group.mode === 'free') return {index, distance: group.distance, label: distanceLabel(group.distance), blockIndex: 0,
     blockTitle: 'Free timing', repInBlock: index + 1, repsInBlock: null, restAfterSeconds: group.restSeconds, repeatRestSeconds: group.restSeconds};
   return getPlan(group)[index] || null;
+}
+
+/** The workout as the coach wrote it, one entry per line, each tied to its blocks. Null when there is no written plan. */
+export function workoutLines(group) {
+  if (group.mode === 'free' || !group.workoutText) return null;
+  try {return parseWorkout(group.workoutText).lines;} catch {return null;}
 }
 
 export function workoutSummary(group) {
@@ -161,7 +198,8 @@ function makeGroup(id, values = {}) {
     distance: number(values.distance, 400, 1, 100000),
     restSeconds: number(values.restSeconds, 60), setRestSeconds: number(values.setRestSeconds, 360),
     recoveryMode: values.recoveryMode === 'manual' ? 'manual' : 'auto',
-    athletes: names.map((name, i) => ({id: `${id}-athlete-${i + 1}`, name: String(name).trim()})),
+    athletes: names.map((name, i) => ({id: `${id}-athlete-${i + 1}`, name: String(name).trim(), pack: null, mods: {}})),
+    packs: [],
     repIndex: 0, extraReps: 0, records: [freshRep(0)], recovery: null, completed: false,
   };
 }
@@ -171,7 +209,7 @@ export function createSession(now = Date.now()) {
     groups: [makeGroup('group-a', {name: 'Distance', workoutText: SAMPLE_WORKOUT}), makeGroup('group-b', {
       name: 'Mid Distance', color: 'orange', sets: 2, repsPerSet: 4, distance: 400,
       restSeconds: 60, setRestSeconds: 360, athleteNames: ['Nick Lawrence', 'Daniel Sanchez', 'Eddie Panniccia', 'Myles Taylor', 'Ethan Wu'],
-    })], activeGroupId: 'group-a'};
+    })], activeGroupId: 'group-a', prefs: {finishedToBottom: true}};
 }
 
 export function getGroup(state, id = state.activeGroupId) {
@@ -241,11 +279,100 @@ export function act(state, action, now = Date.now()) {
     }
     next.completed = true; return next;
   }
+  if (action.type === 'SET_PREF') {
+    if (!['finishedToBottom'].includes(action.key)) throw new Error('Unknown setting.');
+    next.prefs = {...(next.prefs || {}), [action.key]: !!action.value}; return next;
+  }
   const group = getGroup(next, action.groupId);
   const rep = currentRep(group);
+  group.packs ??= [];
+  rep.modSkipped ??= [];
+  if (action.type === 'DELETE_GROUP') {
+    if (next.groups.length <= 1) throw new Error('A session needs at least one group.');
+    next.groups = next.groups.filter(g => g.id !== group.id);
+    if (next.activeGroupId === group.id) next.activeGroupId = next.groups[0].id;
+    return next;
+  }
+  if (action.type === 'DELETE_ATHLETE') {
+    if (!group.athletes.some(a => a.id === action.athleteId)) throw new Error('Athlete not found.');
+    if (group.athletes.length <= 1) throw new Error('A group needs at least one runner.');
+    group.athletes = group.athletes.filter(a => a.id !== action.athleteId);
+    for (const r of group.records) {
+      delete r.starts[action.athleteId]; delete r.finishes[action.athleteId]; delete r.splits?.[action.athleteId];
+      r.skipped = r.skipped.filter(id => id !== action.athleteId); r.modSkipped = (r.modSkipped || []).filter(id => id !== action.athleteId);
+    }
+    if (!group.completed && !rep.closed && touched(rep)) settle(group, now, true);
+    return next;
+  }
+  if (action.type === 'ADD_ATHLETE') {
+    const name = String(action.name || '').trim();
+    if (!name) throw new Error('Enter a name.');
+    if (group.athletes.length >= 50) throw new Error('Use up to 50 runners per group.');
+    const used = group.athletes.map(a => Number(a.id.split('-athlete-')[1]) || 0);
+    const id = `${group.id}-athlete-${Math.max(0, ...used) + 1}`;
+    group.athletes.push({id, name, pack: null, mods: {}});
+    for (const r of group.records) if (r.index < group.repIndex || r.closed) {r.skipped.push(id); r.modSkipped.push(id);}
+    return next;
+  }
+  if (action.type === 'MOVE_ATHLETE') {
+    const index = group.athletes.findIndex(a => a.id === action.athleteId);
+    if (index < 0) throw new Error('Athlete not found.');
+    const [athlete] = group.athletes.splice(index, 1);
+    if (action.packId !== undefined) {
+      if (action.packId !== null && !group.packs.some(p => p.id === action.packId)) throw new Error('Pack not found.');
+      athlete.pack = action.packId;
+    }
+    let at = group.athletes.length;
+    if (action.beforeId) at = group.athletes.findIndex(a => a.id === action.beforeId);
+    else if (action.afterId) at = group.athletes.findIndex(a => a.id === action.afterId) + 1;
+    group.athletes.splice(at < 0 ? group.athletes.length : at, 0, athlete);
+    return next;
+  }
+  if (action.type === 'SET_PACKS') {
+    const packs = (action.packs || []).map((p, i) => ({id: String(p.id), name: String(p.name || '').trim() || `Pack ${i + 1}`}));
+    if (packs.length > MAX_PACKS) throw new Error(`Use up to ${MAX_PACKS} packs.`);
+    if (new Set(packs.map(p => p.id)).size !== packs.length) throw new Error('Pack ids must be unique.');
+    group.packs = packs;
+    for (const athlete of group.athletes) {
+      const wanted = action.assignments && has(action.assignments, athlete.id) ? action.assignments[athlete.id] : athlete.pack;
+      athlete.pack = packs.some(p => p.id === wanted) ? wanted : null;
+    }
+    return next;
+  }
+  if (action.type === 'SET_MODS') {
+    if (group.mode === 'free') throw new Error('Per-runner changes need a planned workout.');
+    const ids = action.athleteIds || [];
+    const targets = group.athletes.filter(a => ids.includes(a.id));
+    if (!targets.length) throw new Error('Choose at least one runner.');
+    for (const [key, change] of Object.entries(action.changes || {})) {
+      const step = Number(key);
+      if (!Number.isInteger(step) || step < 0 || step >= totalReps(group)) throw new Error('That run is not part of the workout.');
+      let value = null;
+      if (change?.skip) value = {skip: true};
+      else if (change?.distance != null) value = {distance: number(change.distance, NaN, 1, 100000)};
+      for (const athlete of targets) {
+        athlete.mods ??= {};
+        if (value) athlete.mods[step] = clone(value); else delete athlete.mods[step];
+      }
+    }
+    if (!group.completed) {
+      syncPlannedSkips(group, rep);
+      if (touched(rep)) settle(group, now, true);
+    }
+    return next;
+  }
   if (action.type === 'UPDATE_GROUP') {
     if (group.records.some(touched)) throw new Error('Edit a group before recording its first rep.');
     const updated = makeGroup(group.id, {...group, athleteNames: group.athletes.map(a => a.name), ...action.values});
+    updated.packs = group.packs || [];
+    const sameWorkout = updated.workoutText === group.workoutText && updated.mode === group.mode;
+    for (const athlete of updated.athletes) {
+      const old = group.athletes.find(o => o.name === athlete.name);
+      if (!old) continue;
+      if (old.pack && updated.packs.some(p => p.id === old.pack)) athlete.pack = old.pack;
+      if (sameWorkout) athlete.mods = clone(old.mods || {});
+    }
+    syncPlannedSkips(updated, updated.records[0]);
     next.groups[next.groups.findIndex(g => g.id === group.id)] = updated;
     return next;
   }
@@ -270,7 +397,7 @@ export function act(state, action, now = Date.now()) {
     }
     if (group.completed || rep.closed) {
       group.completed = false; group.recovery = null; group.repIndex += 1;
-      group.records.push(freshRep(group.repIndex));
+      group.records.push(freshRepFor(group, group.repIndex));
       next.completed = false;
     }
     return next;
@@ -366,6 +493,42 @@ export function act(state, action, now = Date.now()) {
       if (!taken) throw new Error('No runners are available for a split.');
       break;
     }
+    case 'START_PACK':
+    case 'FINISH_PACK':
+    case 'SPLIT_PACK': {
+      if (!group.packs.some(p => p.id === action.packId)) throw new Error('Pack not found.');
+      const members = group.athletes.filter(a => a.pack === action.packId).map(a => a.id);
+      const live = id => has(rep.starts, id) && !has(rep.finishes, id) && !rep.skipped.includes(id);
+      if (action.type === 'START_PACK') {
+        const ready = members.filter(id => !has(rep.starts, id) && !has(rep.finishes, id) && !rep.skipped.includes(id));
+        if (!ready.length) throw new Error('Nobody in this pack is waiting to start.');
+        for (const id of ready) rep.starts[id] = now;
+      } else if (action.type === 'FINISH_PACK') {
+        const running = members.filter(live);
+        if (!running.length) throw new Error('Nobody in this pack is running.');
+        for (const id of running) rep.finishes[id] = {ms: Math.max(0, now - rep.starts[id]), at: now, manual: false};
+        settle(group, now);
+      } else {
+        const limit = splitCapacity(getStep(group));
+        rep.splits ??= {};
+        const running = members.filter(id => live(id) && (rep.splits[id] || []).length < limit);
+        if (!running.length) throw new Error('Nobody in this pack is available for a split.');
+        for (const id of running) (rep.splits[id] ||= []).push({ms: Math.max(0, now - rep.starts[id]), at: now});
+      }
+      break;
+    }
+    case 'RESET_REP': {
+      // Back to a clean, not-yet-started rep (planned skips stay). Any rest that began from this rep is cancelled.
+      const fresh = freshRepFor(group, rep.index);
+      Object.assign(rep, {starts: {}, finishes: {}, splits: {}, unassigned: [], skipped: fresh.skipped, modSkipped: fresh.modSkipped});
+      group.recovery = null;
+      break;
+    }
+    case 'RESET_REST':
+      if (!group.recovery) throw new Error('No rest is running.');
+      if (action.stop) group.recovery = null;
+      else group.recovery = {startedAt: now, durationMs: restDuration(group), manual: group.recovery.manual};
+      break;
     case 'START_RECOVERY':
       if (!group.recovery) group.recovery = {startedAt: now, durationMs: restDuration(group), manual: true};
       break;
@@ -378,7 +541,7 @@ export function act(state, action, now = Date.now()) {
       rep.closedAt = now;
       group.recovery = null;
       if (isFinal(group)) group.completed = true;
-      else {group.repIndex += 1; group.records.push(freshRep(group.repIndex));}
+      else {group.repIndex += 1; group.records.push(freshRepFor(group, group.repIndex));}
       break;
     default: throw new Error(`Unknown action: ${action.type}`);
   }
@@ -398,20 +561,21 @@ function csvCell(value) {
   return `"${text.replaceAll('"', '""')}"`;
 }
 
-export function exportCsv(state) {
+export function exportDetailCsv(state) {
   const maxSplits = Math.max(0, ...state.groups.flatMap(g => g.records.map(r => Math.max(0, ...Object.values(r.splits || {}).map(l => l.length)))));
   const splitHeaders = Array.from({length: maxSplits}, (_, i) => [`split_${i + 1}_label`, `split_${i + 1}_seconds`]).flat();
-  const rows = [['date', 'group', 'athlete', 'set', 'rep', 'distance', 'status', 'time_seconds', 'source', 'block', 'run_label', ...splitHeaders, ...(maxSplits ? ['after_last_split_seconds'] : [])]];
+  const rows = [['date', 'group', 'athlete', 'pack', 'set', 'rep', 'planned_distance', 'distance', 'status', 'time_seconds', 'source', 'block', 'run_label', ...splitHeaders, ...(maxSplits ? ['after_last_split_seconds'] : [])]];
   const created = new Date(state.createdAt);
   const date = `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(2, '0')}-${String(created.getDate()).padStart(2, '0')}`;
   for (const group of state.groups) for (const rep of group.records.filter(touched)) {
     const planStep = getStep(group, rep.index);
     for (const athlete of group.athletes) {
       const finish = rep.finishes[athlete.id];
-      rows.push([date, group.name, athlete.name,
+      const mine = athletePlan(group, athlete, rep.index);
+      rows.push([date, group.name, athlete.name, (group.packs || []).find(p => p.id === athlete.pack)?.name ?? '',
         (planStep?.blockIndex ?? 0) + 1,
         planStep?.repInBlock ?? rep.index + 1,
-        planStep?.distance ?? group.distance, finish ? 'recorded' : rep.skipped.includes(athlete.id) ? 'skipped' : 'missing',
+        mine.planned, mine.distance, finish ? 'recorded' : rep.skipped.includes(athlete.id) ? 'skipped' : 'missing',
         finish ? (finish.ms / 1000).toFixed(2) : '', finish ? finish.manual ? 'manual' : 'stopwatch' : '',
         planStep?.blockTitle ?? '', planStep?.label ?? '',
         ...Array.from({length: maxSplits}, (_, i) => { const sp = (rep.splits?.[athlete.id] || [])[i]; return sp ? [splitLabel(planStep, i), (sp.ms / 1000).toFixed(2)] : ['', '']; }).flat(),
@@ -419,5 +583,43 @@ export function exportCsv(state) {
       ]);
     }
   }
+  return rows.map(row => row.map(csvCell).join(',')).join('\r\n');
+}
+
+/** Short split time for tight spaces: 31.20 or 1:02.15 */
+export function shortTime(ms) {
+  const cs = Math.floor(Math.max(0, Math.round(Number(ms) || 0)) / 10), minutes = Math.floor(cs / 6000), seconds = Math.floor((cs % 6000) / 100);
+  return minutes ? `${minutes}:${String(seconds).padStart(2, '0')}.${String(cs % 100).padStart(2, '0')}` : `${seconds}.${String(cs % 100).padStart(2, '0')}`;
+}
+
+/** The spreadsheet export: one block per group, laid out like the Results screen (runners down, reps across). */
+export function exportCsv(state) {
+  const created = new Date(state.createdAt);
+  const date = `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(2, '0')}-${String(created.getDate()).padStart(2, '0')}`;
+  const rows = [[state.name, date]];
+  for (const group of state.groups) {
+    const n = group.mode === 'free' ? Math.max(1, group.repIndex + 1) : totalReps(group);
+    const hasPacks = (group.packs || []).length > 0;
+    const recorded = new Set(group.records.filter(touched).map(r => r.index));
+    rows.push([]);
+    rows.push([group.name, ...(group.workoutText ? [group.workoutText.replace(/\s*\r?\n\s*/g, ' / ')] : [])]);
+    rows.push(['Athlete', ...(hasPacks ? ['Pack'] : []),
+      ...Array.from({length: n}, (_, i) => { const step = getStep(group, i); return `Rep ${i + 1}: ${step?.label || 'Rep'}`; }), 'Recorded']);
+    for (const athlete of group.athletes) {
+      const cells = [], notes = [];
+      let count = 0;
+      for (let i = 0; i < n; i++) {
+        const rec = group.records.find(r => r.index === i), finish = rec?.finishes[athlete.id], mine = athletePlan(group, athlete, i);
+        if (finish) count++;
+        cells.push(finish ? `${formatTime(finish.ms)}${finish.manual ? '*' : ''}` : rec?.skipped.includes(athlete.id) ? ((rec.modSkipped || []).includes(athlete.id) ? 'Skip' : 'DNS') : recorded.has(i) ? 'Missing' : '');
+        const splits = (rec?.splits?.[athlete.id] || []).map(sp => formatTime(sp.ms));
+        notes.push([mine.modified && !mine.skip ? `${Number(mine.distance.toFixed(3))}m` : '', splits.length ? `splits ${splits.join(' / ')}` : ''].filter(Boolean).join(' · '));
+      }
+      const pack = (group.packs || []).find(p => p.id === athlete.pack)?.name ?? '';
+      rows.push([athlete.name, ...(hasPacks ? [pack] : []), ...cells, `${count} / ${n}`]);
+      if (notes.some(Boolean)) rows.push(['   changes & splits', ...(hasPacks ? [''] : []), ...notes]);
+    }
+  }
+  rows.push([], ['* manual entry', 'DNS = did not run', 'Skip = planned skip']);
   return rows.map(row => row.map(csvCell).join(',')).join('\r\n');
 }
