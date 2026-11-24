@@ -434,3 +434,25 @@ th small { display: block; margin-top: 3px; font-size: 12px; font-weight: 400; }
 .athlete-row .btn.finish { width: 64px; min-width: 64px; }
 .athlete-row .btn.recorded, .athlete-row .btn.split-btn { width: 36px; min-width: 36px; }
 @media (max-width: 380px) { .athlete-time { min-width: 60px; font-size: 14.5px; } .athlete-row .btn, .athlete-row .btn.finish { width: 58px; min-width: 58px; } .athlete-row .btn.recorded, .athlete-row .btn.split-btn { width: 34px; min-width: 34px; } }
+
+/* ===== v4: goals, sheet, practice loader ===== */
+.goal-tag { flex-shrink: 0; padding: 0 5px; border-radius: 4px; background: #f1f4fa; color: #6b7891; font-size: 11.5px; font-weight: 650; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.goal-tag::before { content: 'goal '; font-weight: 500; }
+.athlete-time.beat { color: #0b7a3b; }
+.athlete-time.missed { color: #c91d2b; }
+.time-cell.beat { color: #0b7a3b; font-weight: 650; }
+.time-cell.missed { color: #c91d2b; font-weight: 650; }
+td.goal-cell { color: #6b7891; font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.send-row { display: flex; align-items: center; gap: 8px; margin: -2px 0 12px; flex-wrap: wrap; }
+.send-row .btn { min-height: 38px; padding: 6px 12px; font-size: 14px; }
+.send-status { color: var(--muted); font-size: 12px; line-height: 1.3; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.pp-group { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid #e8ecf3; font-size: 14px; }
+.pp-group small { color: var(--muted); margin-left: auto; text-align: right; font-size: 12px; }
+.pp-dot { width: 10px; height: 10px; border-radius: 50%; }
+.pp-dot.blue { background: #6fa8dc; } .pp-dot.red { background: #ea9999; } .pp-dot.yellow { background: #ffd966; }
+.tpl-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid #e8ecf3; }
+.tpl-row span { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tpl-row .btn { min-height: 38px; padding: 6px 12px; }
+.tab-pick { display: flex; flex-wrap: wrap; gap: 6px; }
+#modal .workout-editor { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 14px; }

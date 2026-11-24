@@ -17,3 +17,17 @@ Run the engine checks with `node --test tests/engine.test.mjs`.
 - Finished runners can drop to the bottom of the list (toggle in the Runners options).
 - Slide a runner to the right to delete. Tap the active group tab again for group options, including delete.
 - Export: CSV matches the Results screen (runners down, reps across). Detailed CSV has one row per time, in seconds.
+
+## Practice text and the Google Sheet
+Practice format (same text whether pasted or read from a sheet tab named `Plan MM-DD`, column A):
+
+    Distance | blue
+    4x400 45s rest, 6min break
+    2000, 6min break
+    2x300 2.5min rest
+    Johnny | 75, 6:40, 47
+    Arthur | 77, 7:00, 50 | 2000 to 1600
+    Nick | 77, 7:05, 52 | skip 300
+
+Goals are one per distinct distance in order of first appearance. Changes: `2000 to 1600`, `skip 300`, `skip rep 3`.
+`TerrierTiming-AppsScript.gs` is pasted into the existing Apps Script project; the app connects with a setup code `TT1|<web app url>|<team code>` that coaches paste once per phone. Never commit the url or code.
