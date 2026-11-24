@@ -683,6 +683,8 @@ export const PRACTICE_EXAMPLE = `Distance | blue
 4x400 45s rest, 6min break
 2000, 6min break
 2x300 2.5min rest
+Pack Front: Johnny, Arthur
+Pack Back: Nick
 Johnny | 75, 6:40, 47
 Arthur | 77, 7:00, 50 | 2000 to 1600
 Nick | 77, 7:05, 52 | skip 300
@@ -703,7 +705,7 @@ export function parsePractice(text) {
   if (text.length > 20000) throw new Error('That practice is too long.');
   const groups = [];
   let cur = null;
-  const begin = (name, color) => { cur = {name, sheetColor: color || null, lines: [], runners: []}; groups.push(cur); };
+  const begin = (name, color) => { cur = {name, sheetColor: color || null, lines: [], runners: [], packs: []}; groups.push(cur); };
   for (const [i, raw] of text.split(/\r?\n/).entries()) {
     const lineNo = i + 1, line = raw.trim().replace(/×/g, 'x');
     if (!line) continue;
@@ -713,6 +715,14 @@ export function parsePractice(text) {
       if (!cur) begin('Practice');
       if (!bars[0]) throw lineError(lineNo, 'Put the runner’s name first, like “Johnny | 75, 6:40, 47”.');
       cur.runners.push({lineNo, name: bars[0], segments: bars.slice(1)});
+      continue;
+    }
+    const packMatch = line.match(/^packs?\s+([^:|]+?)\s*:\s*(.+)$/i);
+    if (packMatch) {
+      if (!cur) begin('Practice');
+      const members = packMatch[2].split(',').map(x => x.trim()).filter(Boolean);
+      if (!members.length) throw lineError(lineNo, 'List the runners after the colon, like “Pack Front: Johnny, Lorenzo”.');
+      cur.packs.push({lineNo, name: packMatch[1].trim(), members});
       continue;
     }
     if (isRestLine(line)) {
@@ -737,7 +747,7 @@ export function parsePractice(text) {
     if (!g.lines.length) throw new Error(`“${g.name}” needs at least one workout line.`);
     if (!g.runners.length) throw new Error(`“${g.name}” needs at least one runner, like “Johnny | 75, 6:40, 47”.`);
     try { parseWorkout(g.lines.join('\n')); } catch (err) { throw new Error(`${g.name}: ${err.message.replace(/^Line (\d+)/, (_, n) => `workout line ${n}`)}`); }
-    out.push({name: g.name, sheetColor: g.sheetColor, workoutText: g.lines.join('\n'), runners: g.runners.map(parseRunner)});
+    out.push({name: g.name, sheetColor: g.sheetColor, workoutText: g.lines.join('\n'), runners: g.runners.map(parseRunner), packs: g.packs});
   }
   if (!out.length) throw new Error('Add a group with a workout and runners.');
   return {groups: out};
@@ -794,6 +804,18 @@ export function createSessionFromPractice(practice, {name = 'Practice', now = Da
     const group = makeGroup(`group-${i + 1}`, {name: spec.name, workoutText: spec.workoutText, athleteNames: spec.runners.map(r => r.name), sheetColor, color: sheetColor === 'blue' ? 'green' : 'orange'});
     if (new Set(group.athletes.map(a => a.name)).size !== group.athletes.length) throw new Error(`${spec.name}: each runner’s name should appear once.`);
     for (const runner of spec.runners) applyRunner(group, runner);
+    const seen = new Map();
+    group.packs = (spec.packs || []).map((pk, pi) => {
+      const id = `pack-${pi + 1}`;
+      for (const member of pk.members) {
+        const athlete = group.athletes.find(a => a.name.toLowerCase() === member.toLowerCase());
+        if (!athlete) throw lineError(pk.lineNo, `“${member}” in pack ${pk.name} isn’t a runner in ${spec.name}.`);
+        if (seen.has(athlete.id)) throw lineError(pk.lineNo, `${athlete.name} is in more than one pack (${seen.get(athlete.id)} and ${pk.name}).`);
+        seen.set(athlete.id, pk.name);
+        athlete.pack = id;
+      }
+      return {id, name: pk.name};
+    });
     group.records[0] = freshRepFor(group, 0);
     return group;
   });

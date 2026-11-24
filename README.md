@@ -29,5 +29,6 @@ Practice format (same text whether pasted or read from a sheet tab named `Plan M
     Arthur | 77, 7:00, 50 | 2000 to 1600
     Nick | 77, 7:05, 52 | skip 300
 
+Pack lines (`Pack Front: Johnny, Lorenzo`) go under the group name and preload timing packs.
 Goals are one per distinct distance in order of first appearance. Changes: `2000 to 1600`, `skip 300`, `skip rep 3`.
 `TerrierTiming-AppsScript.gs` is pasted into the existing Apps Script project; the app connects with a setup code `TT1|<web app url>|<team code>` that coaches paste once per phone. Never commit the url or code.

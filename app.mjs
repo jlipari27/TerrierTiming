@@ -265,7 +265,7 @@ async function shareResults(){const csv='﻿'+exportCsv(session),name=`terrier-t
 
 /* ---- goal display helpers ---- */
 const hasGoals=g=>g.athletes.some(a=>Object.keys(a.goals||{}).length>0);
-const goalOf=(g,a,idx)=>{if(g.mode!=='planned')return null;const p=athletePlan(g,a,idx);return p.modified||p.skip?null:goalFor(g,a,idx);};
+const goalOf=(g,a,idx)=>{if(g.mode!=='planned')return null;const p=athletePlan(g,a,idx);return p.skip?null:goalFor(g,a,idx);};
 const goalClass=(g,a,idx,f)=>{const gl=goalOf(g,a,idx);return f&&gl!=null?(f.ms/1000<=gl?' beat':' missed'):'';};
 const goalTagHtml=(g,a,idx)=>{const gl=goalOf(g,a,idx);return gl!=null&&session.prefs?.showGoals!==false?`<span class="goal-tag" title="Goal">${goalText(gl,'sheet')}</span>`:'';};
 const sendRow=()=>`<div class="send-row">${btn(sheetOn()?'Send to sheet':'Connect sheet',sheetOn()?'send-sheet':'sheet-settings',{icon:'download'})}${btn('Share','share-results',{icon:'download'})}<span class="send-status" data-sheet-status>${e(sheetStatus||(sheetOn()?'Connected':'Not connected'))}</span></div>`;
