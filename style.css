@@ -466,4 +466,10 @@ td.goal-cell { color: #6b7891; font-size: 13px; white-space: nowrap; font-varian
 .big-timer.rest-open { color: #ffd98a; }
 .check-line { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 14px; font-weight: 600; }
 .check-line input { width: 18px; height: 18px; }
-.timer-actions .btn { min-width: 0; }
+
+/* ---- v5.1: row layout and timer buttons ---- */
+.timer-actions .btn.start-rem { flex: 1 1 100%; }
+.timer-actions .btn { flex: 1 1 0; min-width: max-content; }
+.athlete-name .split-line { flex-wrap: nowrap; gap: 4px; margin-top: 3px; overflow: hidden; align-items: center; }
+.split-time.latest { background: #dfe8ff; color: #1644c8; font-weight: 750; }
+.split-live { background: #fff; }

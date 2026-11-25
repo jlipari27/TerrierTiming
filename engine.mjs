@@ -738,6 +738,8 @@ export function exportDetailCsv(state) {
 }
 
 /** Short split time for tight spaces: 31.20 or 1:02.15 */
+/** Each split as its own segment time (since the previous split, or the start). The stored values stay cumulative. */
+export const splitLaps = list => (list || []).map((sp, i) => Math.max(0, sp.ms - (i ? list[i - 1].ms : 0)));
 export function shortTime(ms) {
   const cs = Math.floor(Math.max(0, Math.round(Number(ms) || 0)) / 10), minutes = Math.floor(cs / 6000), seconds = Math.floor((cs % 6000) / 100);
   return minutes ? `${minutes}:${String(seconds).padStart(2, '0')}.${String(cs % 100).padStart(2, '0')}` : `${seconds}.${String(cs % 100).padStart(2, '0')}`;
@@ -763,7 +765,7 @@ export function exportCsv(state) {
         const rec = group.records.find(r => r.index === i), finish = rec?.finishes[athlete.id], mine = athletePlan(group, athlete, i);
         if (finish) count++;
         cells.push(finish ? `${formatTime(finish.ms)}${finish.manual ? '*' : ''}` : rec?.skipped.includes(athlete.id) ? ((rec.modSkipped || []).includes(athlete.id) ? 'Skip' : 'DNS') : recorded.has(i) ? 'Missing' : '');
-        const splits = (rec?.splits?.[athlete.id] || []).map(sp => formatTime(sp.ms));
+        const splits = splitLaps(rec?.splits?.[athlete.id]).map(ms => formatTime(ms));
         notes.push([mine.modified && !mine.skip ? `${Number(mine.distance.toFixed(3))}m` : '', splits.length ? `splits ${splits.join(' / ')}` : ''].filter(Boolean).join(' · '));
       }
       const pack = (group.packs || []).find(p => p.id === athlete.pack)?.name ?? '';
@@ -937,7 +939,7 @@ export function buildSheetPayload(state, groupId) {
         cells: Array.from({length: n}, (_, i) => {
           const rec = group.records.find(r => r.index === i), f = rec?.finishes[a.id], mine = athletePlan(group, a, i), notes = [];
           if (mine.modified && !mine.skip) notes.push(`${Number(mine.distance.toFixed(3))}m`);
-          const splits = (rec?.splits?.[a.id] || []).map(sp => shortTime(sp.ms));
+          const splits = splitLaps(rec?.splits?.[a.id]).map(ms => shortTime(ms));
           if (splits.length) notes.push(`splits ${splits.join(' / ')}`);
           if (f?.manual) notes.push('manual entry');
           const skipped = rec?.skipped.includes(a.id);
