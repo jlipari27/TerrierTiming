@@ -15,13 +15,19 @@ Run the engine checks with `node --test tests/engine.test.mjs`.
 - Per-runner changes: a different distance or planned skips, set ahead of time or mid-workout (runner menu > Change this runner's workout).
 - Timing packs: group runners to start, split, or finish together. Drag the grip to reorder or move runners between packs.
 - Finished runners can drop to the bottom of the list (toggle in the Runners options).
+- Start remaining: once one runner is started, the Start all button becomes "Start N remaining".
+- Each finished runner shows their own rest clock beside their name; a running runner with splits shows a small live clock since the last split.
+- Open rest: add `open rest` to a line (`4x400 open rest`, `open rest between sets`, `, open break`) or tick "Open rest" for free timing. It counts up until you tap Next rep.
+- Packs can sit above, below or between individual runners (pack menu: Move up, Move down, To top, To bottom).
+- New practice (button at the top of the Timer screen): Quick start (blank), Simple workout, or load today's practice. The current session is saved first. The app also offers this when it opens to a session from an earlier day.
+- Group colors for the sheet: blue (distance), red (mid distance), yellow (freshmen), purple (sprinters).
 - Slide a runner to the right to delete. Tap the active group tab again for group options, including delete.
 - Export: CSV matches the Results screen (runners down, reps across). Detailed CSV has one row per time, in seconds.
 
 ## Practice text and the Google Sheet
 Practice format (same text whether pasted or read from a sheet tab named `Plan MM-DD`, column A):
 
-    Distance | blue
+    Distance | blue   (colors: blue, red, yellow, purple)
     4x400 45s rest, 6min break
     2000, 6min break
     2x300 2.5min rest

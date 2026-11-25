@@ -43,7 +43,7 @@ export const SAMPLE_WORKOUT = '3200 tempo\n4min rest\n400-600-400-200 2min rest\
 const MAX_RUNS = 1000;
 const durationSource = '(\\d+(?:\\.\\d+)?)\\s*(minutes?|mins?|min|m|seconds?|secs?|sec|s)';
 const distanceSource = '\\d+(?:\\.\\d+)?\\s*(?:km|m)?';
-export const isRestLine = text => new RegExp(`^${durationSource}\\s*(?:rest|break|brea|recovery)$`, 'i').test(String(text).trim());
+export const isRestLine = text => new RegExp(`^${durationSource}\\s*(?:rest|break|brea|recovery)$`, 'i').test(String(text).trim()) || /^open\s*(?:rest|break|brea|recovery)$/i.test(String(text).trim());
 const lineError = (line, message) => new Error(`Line ${line}: ${message}`);
 const distanceLabel = distance => `${Number(distance.toFixed(3))}m`;
 const MAX_SPLITS = 40;
@@ -77,6 +77,14 @@ export function parseWorkout(text) {
     const line = lineIndex + 1;
     let input = raw.trim().replace(/[–—−]/g, '-').replace(/×/g, 'x');
     if (!input) continue;
+    if (/^open\s*(?:rest|break|brea|recovery)$/i.test(input)) {
+      if (!steps.length) throw lineError(line, 'Add a running block before recovery.');
+      if (pendingRest != null) throw lineError(line, 'Combine consecutive recovery lines into one.');
+      steps.at(-1).restAfterSeconds = 0; steps.at(-1).restOpen = true;
+      lines.at(-1).restText = raw.trim();
+      pendingRest = line;
+      continue;
+    }
     const restOnly = input.match(new RegExp(`^${durationSource}\\s*(?:rest|break|brea|recovery)$`, 'i'));
     if (restOnly) {
       if (!steps.length) throw lineError(line, 'Add a running block before recovery.');
@@ -90,11 +98,18 @@ export function parseWorkout(text) {
     let sets = 1, repetitions = 1, repRest = 0, setRest = null;
     const setMatch = input.match(/^(\d+)\s+sets?\s+(?:of\s+)?/i);
     if (setMatch) {sets = Number(setMatch[1]); input = input.slice(setMatch[0].length).trim();}
-    let inlineBreak = null;
+    let inlineBreak = null, inlineOpen = false, setOpen = false, repOpen = false;
+    const openBreakMatch = input.match(/[,;]\s*open\s*(?:break|brea)$/i);
+    if (openBreakMatch) {inlineOpen = true; input = input.slice(0, openBreakMatch.index).trim();}
     const breakMatch = input.match(new RegExp(`[,;]\\s*${durationSource}\\s*(?:break|brea)$`, 'i'));
     if (breakMatch) {
       inlineBreak = durationSeconds(breakMatch[1], breakMatch[2], line);
       input = input.slice(0, breakMatch.index).trim();
+    }
+    const openBetween = input.match(/[,;]?\s*open\s+(?:rest\s+)?between\s+sets$/i);
+    if (openBetween) {
+      if (!setMatch) throw lineError(line, 'Use “2 sets of 4x400 1min rest, open rest between sets” for set recovery.');
+      setOpen = true; input = input.slice(0, openBetween.index).trim();
     }
     const betweenMatch = input.match(new RegExp(`[,;]?\\s*${durationSource}\\s+(?:rest\\s+)?between\\s+sets$`, 'i'));
     if (betweenMatch) {
@@ -102,6 +117,8 @@ export function parseWorkout(text) {
       setRest = durationSeconds(betweenMatch[1], betweenMatch[2], line);
       input = input.slice(0, betweenMatch.index).trim();
     }
+    const openRecovery = input.match(/[,;]?\s*(?:with\s+)?open\s+(?:rest|recovery)(?:\s+between\s+(?:reps|runs))?$/i);
+    if (openRecovery) {repOpen = true; input = input.slice(0, openRecovery.index).trim();}
     const recoveryMatch = input.match(new RegExp(`[,;]?\\s*(?:with\\s+)?${durationSource}\\s*(?:rest|recovery)(?:\\s+between\\s+(?:reps|runs))?$`, 'i'));
     if (recoveryMatch) {
       repRest = durationSeconds(recoveryMatch[1], recoveryMatch[2], line);
@@ -141,19 +158,22 @@ export function parseWorkout(text) {
       blocks.push({title: blockTitle, startIndex, count});
       for (let i = 0; i < count; i++) {
         const distance = distances[i % distances.length];
+        const lastOfSet = i === count - 1 && set < sets - 1;
+        const open = lastOfSet ? (setOpen || (setRest == null && repOpen)) : repOpen;
         steps.push({index: steps.length, distance, splits: splitDistances(splitSpec, distance), label: `${distanceLabel(distance)}${description ? ` ${description}` : ''}`,
           blockIndex, blockTitle, repInBlock: i + 1, repsInBlock: count,
-          restAfterSeconds: i === count - 1 && set < sets - 1 ? setRest ?? repRest : repRest,
-          repeatRestSeconds: repRest});
+          restAfterSeconds: open ? 0 : lastOfSet ? setRest ?? repRest : repRest, restOpen: open,
+          repeatRestSeconds: repRest, repeatRestOpen: repOpen});
       }
     }
-    if (inlineBreak != null) steps.at(-1).restAfterSeconds = inlineBreak;
+    if (inlineBreak != null) {steps.at(-1).restAfterSeconds = inlineBreak; steps.at(-1).restOpen = false;}
+    if (inlineOpen) {steps.at(-1).restAfterSeconds = 0; steps.at(-1).restOpen = true;}
     lines.push({text: raw.trim(), blocks: lineBlocks, restText: ''});
     pendingRest = null;
   }
   if (!steps.length) throw new Error('Add at least one running block.');
   if (pendingRest != null) throw lineError(pendingRest, 'Add the next running block after this recovery, or remove the final recovery line.');
-  steps.at(-1).restAfterSeconds = 0;
+  steps.at(-1).restAfterSeconds = 0; steps.at(-1).restOpen = false;
   return {steps, blocks, lines, title: blocks.map(block => block.title).join(' → ')};
 }
 
@@ -173,8 +193,8 @@ export function getPlan(group) {
 }
 
 export function getStep(group, index = group.repIndex) {
-  if (group.mode === 'free') return {index, distance: group.distance, label: distanceLabel(group.distance), blockIndex: 0,
-    blockTitle: 'Free timing', repInBlock: index + 1, repsInBlock: null, restAfterSeconds: group.restSeconds, repeatRestSeconds: group.restSeconds};
+  if (group.mode === 'free') return {index, distance: group.distance, label: group.noDistance ? `Rep ${index + 1}` : distanceLabel(group.distance), blockIndex: 0,
+    blockTitle: 'Free timing', repInBlock: index + 1, repsInBlock: null, restAfterSeconds: group.restOpen ? 0 : group.restSeconds, restOpen: !!group.restOpen, repeatRestSeconds: group.restSeconds};
   return getPlan(group)[index] || null;
 }
 
@@ -191,7 +211,7 @@ export function workoutSummary(group) {
 }
 
 function makeGroup(id, values = {}) {
-  const names = values.athleteNames || [ 'Johnny Forte', 'Lorenzo Pantaleo', 'Arthur Sweeny', 'Aiden Victorio', 'Nick Lawrence', 'Santino Jimenez'];
+  const names = values.athleteNames || ['Athlete 1', 'Athlete 2', 'Athlete 3'];
   if (!Array.isArray(names) || !names.length || names.some(n => !String(n).trim())) throw new Error('Add at least one athlete with a name.');
   const mode = values.mode === 'free' ? 'free' : 'planned';
   if (values.workoutText != null && typeof values.workoutText !== 'string') throw new Error('Enter the workout as text.');
@@ -199,9 +219,9 @@ function makeGroup(id, values = {}) {
   if (workoutText.length > 8000) throw new Error('Keep the workout under 8,000 characters.');
   const plan = workoutText && mode === 'planned' ? parseWorkout(workoutText).steps : null;
   return {
-    id, name: String(values.name || 'New group').trim(), color: values.color === 'orange' ? 'orange' : 'green',
-    sheetColor: ['blue', 'red', 'yellow'].includes(values.sheetColor) ? values.sheetColor : values.color === 'orange' ? 'red' : 'blue',
-    mode, workoutText, plan,
+    id, name: String(values.name || 'New group').trim(), color: values.color === 'orange' ? 'orange' : values.color === 'purple' ? 'purple' : 'green',
+    sheetColor: ['blue', 'red', 'yellow', 'purple'].includes(values.sheetColor) ? values.sheetColor : values.color === 'orange' ? 'red' : values.color === 'purple' ? 'purple' : 'blue',
+    mode, workoutText, plan, restOpen: values.restOpen === true || values.restOpen === 'on', noDistance: !!values.noDistance,
     sets: Math.floor(number(values.sets, 2, 1, 20)),
     repsPerSet: Math.floor(number(values.repsPerSet, 4, 1, 50)),
     distance: number(values.distance, 400, 1, 100000),
@@ -213,12 +233,28 @@ function makeGroup(id, values = {}) {
   };
 }
 
+export const SIMPLE_WORKOUT = '4x400 90s rest';
+const DEFAULT_PREFS = () => ({finishedToBottom: true, showGoals: true});
+/** The default: one simple group with generic names, so a new coach sees a clean example. */
 export function createSession(now = Date.now()) {
+  return {id: `session-${now}`, name: 'Practice', createdAt: now,
+    groups: [makeGroup('group-a', {name: 'Group 1', workoutText: SIMPLE_WORKOUT, athleteNames: ['Athlete 1', 'Athlete 2', 'Athlete 3']})],
+    activeGroupId: 'group-a', prefs: DEFAULT_PREFS()};
+}
+/** The original two-group sample (mixed workout, full roster). Kept for tests and demos. */
+export function createSampleSession(now = Date.now()) {
+  const roster = ['Johnny Forte', 'Lorenzo Pantaleo', 'Arthur Sweeny', 'Aiden Victorio', 'Nick Lawrence', 'Santino Jimenez'];
   return {id: `session-${now}`, name: 'Afternoon practice', createdAt: now,
-    groups: [makeGroup('group-a', {name: 'Distance', workoutText: SAMPLE_WORKOUT}), makeGroup('group-b', {
+    groups: [makeGroup('group-a', {name: 'Distance', workoutText: SAMPLE_WORKOUT, athleteNames: roster}), makeGroup('group-b', {
       name: 'Mid Distance', color: 'orange', sets: 2, repsPerSet: 4, distance: 400,
       restSeconds: 60, setRestSeconds: 360, athleteNames: ['Nick Lawrence', 'Daniel Sanchez', 'Eddie Panniccia', 'Myles Taylor', 'Ethan Wu'],
-    })], activeGroupId: 'group-a', prefs: {finishedToBottom: true, showGoals: true}};
+    })], activeGroupId: 'group-a', prefs: DEFAULT_PREFS()};
+}
+/** Blank quick start: free timing, three generic runners, open rest that counts up. */
+export function createQuickSession(now = Date.now()) {
+  return {id: `session-${now}`, name: 'Quick start', createdAt: now,
+    groups: [makeGroup('group-a', {name: 'Group 1', mode: 'free', restOpen: true, restSeconds: 0, noDistance: true, athleteNames: ['Athlete 1', 'Athlete 2', 'Athlete 3']})],
+    activeGroupId: 'group-a', prefs: DEFAULT_PREFS()};
 }
 
 export const plannedDistances = group => { const seen = []; for (const step of getPlan(group)) if (!seen.includes(step.distance)) seen.push(step.distance); return seen; };
@@ -240,6 +276,31 @@ export function goalString(group, athlete) {
   return list.slice(0, last + 1).map(g => typeof g === 'number' ? goalText(g, 'sheet') : '-').join(', ');
 }
 
+/** Display order of a group's list: loose runners in order, with each pack sitting below the runner it is anchored to (pack.after; null = top). */
+export function layoutItems(group) {
+  const packs = group.packs || [];
+  const loose = group.athletes.filter(a => !packs.some(p => p.id === a.pack));
+  const ids = new Set(loose.map(a => a.id));
+  const rank = packs.map((p, i) => ({p, k: p.sub ?? i, i}));
+  const anchorOf = p => (p.after != null && ids.has(p.after)) ? p.after : null;
+  const at = id => rank.filter(x => anchorOf(x.p) === id).sort((a, b) => a.k - b.k || a.i - b.i).map(x => ({pack: x.p}));
+  const items = [...at(null)];
+  for (const a of loose) items.push({athlete: a}, ...at(a.id));
+  return items;
+}
+/** After runners move, keep every pack where it visually was: re-anchor each to the nearest earlier runner who is still loose. */
+function reanchorPacks(group, oldItems, exclude = null) {
+  const ids = new Set(group.athletes.filter(a => !group.packs.some(p => p.id === a.pack) && a.id !== exclude).map(a => a.id));
+  oldItems.forEach((it, i) => {
+    if (!it.pack) return;
+    const p = group.packs.find(x => x.id === it.pack.id);
+    if (!p) return;
+    let anchor = null;
+    for (let j = i - 1; j >= 0; j--) if (oldItems[j].athlete && ids.has(oldItems[j].athlete.id)) {anchor = oldItems[j].athlete.id; break;}
+    p.after = anchor;
+  });
+}
+
 export function getGroup(state, id = state.activeGroupId) {
   const group = state.groups.find(g => g.id === id);
   if (!group) throw new Error('Group not found.');
@@ -249,8 +310,12 @@ export function getGroup(state, id = state.activeGroupId) {
 export const currentRep = group => group.records.find(rep => rep.index === group.repIndex);
 
 export function recoveryRemaining(group, now = Date.now()) {
-  return group.recovery ? Math.max(0, group.recovery.durationMs - (now - group.recovery.startedAt)) : 0;
+  if (!group.recovery) return 0;
+  if (group.recovery.open) return Infinity; // open rest never runs out; it counts up
+  return Math.max(0, group.recovery.durationMs - (now - group.recovery.startedAt));
 }
+/** Seconds into an open rest (counts upward), in ms. */
+export const recoveryElapsed = (group, now = Date.now()) => group.recovery ? Math.max(0, now - group.recovery.startedAt) : 0;
 
 export function phase(group, now = Date.now()) {
   if (group.completed) return 'complete';
@@ -275,6 +340,10 @@ export function elapsed(record, now = Date.now()) {
 function restDuration(group) {
   return (getStep(group)?.restAfterSeconds ?? group.restSeconds) * 1000;
 }
+const restIsOpen = group => !!getStep(group)?.restOpen;
+function newRecovery(group, startedAt, manual) {
+  return restIsOpen(group) ? {startedAt, durationMs: 0, manual, open: true} : {startedAt, durationMs: restDuration(group), manual};
+}
 
 function settle(group, now, manualEntry = false) {
   const rep = currentRep(group);
@@ -287,7 +356,7 @@ function settle(group, now, manualEntry = false) {
   } else if (group.recoveryMode === 'auto' && !group.recovery) {
     const finishTimes = Object.values(rep.finishes).map(f => f.at);
     const startedAt = manualEntry || !finishTimes.length ? now : Math.max(...finishTimes);
-    group.recovery = {startedAt, durationMs: restDuration(group), manual: false};
+    group.recovery = newRecovery(group, startedAt, false);
   }
 }
 
@@ -324,7 +393,9 @@ export function act(state, action, now = Date.now()) {
   if (action.type === 'DELETE_ATHLETE') {
     if (!group.athletes.some(a => a.id === action.athleteId)) throw new Error('Athlete not found.');
     if (group.athletes.length <= 1) throw new Error('A group needs at least one runner.');
+    const oldItems = layoutItems(group);
     group.athletes = group.athletes.filter(a => a.id !== action.athleteId);
+    reanchorPacks(group, oldItems, action.athleteId);
     for (const r of group.records) {
       delete r.starts[action.athleteId]; delete r.finishes[action.athleteId]; delete r.splits?.[action.athleteId];
       r.skipped = r.skipped.filter(id => id !== action.athleteId); r.modSkipped = (r.modSkipped || []).filter(id => id !== action.athleteId);
@@ -345,6 +416,7 @@ export function act(state, action, now = Date.now()) {
   if (action.type === 'MOVE_ATHLETE') {
     const index = group.athletes.findIndex(a => a.id === action.athleteId);
     if (index < 0) throw new Error('Athlete not found.');
+    const oldItems = layoutItems(group);
     const [athlete] = group.athletes.splice(index, 1);
     if (action.packId !== undefined) {
       if (action.packId !== null && !group.packs.some(p => p.id === action.packId)) throw new Error('Pack not found.');
@@ -354,17 +426,37 @@ export function act(state, action, now = Date.now()) {
     if (action.beforeId) at = group.athletes.findIndex(a => a.id === action.beforeId);
     else if (action.afterId) at = group.athletes.findIndex(a => a.id === action.afterId) + 1;
     group.athletes.splice(at < 0 ? group.athletes.length : at, 0, athlete);
+    reanchorPacks(group, oldItems, athlete.id);
+    if (action.abovePackId && !athlete.pack) {
+      const p = group.packs.find(x => x.id === action.abovePackId);
+      if (p) p.after = athlete.id;
+    }
     return next;
   }
   if (action.type === 'MOVE_PACK') {
-    const index = group.packs.findIndex(p => p.id === action.packId);
-    if (index < 0) throw new Error('Pack not found.');
-    const [pack] = group.packs.splice(index, 1);
-    let at;
-    if (action.dir) at = Math.max(0, Math.min(group.packs.length, index + (action.dir < 0 ? -1 : 1)));
-    else if (action.beforeId) at = group.packs.findIndex(p => p.id === action.beforeId);
-    else at = group.packs.length;
-    group.packs.splice(at < 0 ? group.packs.length : at, 0, pack);
+    const pack = group.packs.find(p => p.id === action.packId);
+    if (!pack) throw new Error('Pack not found.');
+    const loose = group.athletes.filter(a => !group.packs.some(p => p.id === a.pack));
+    const keyOf = p => p.sub ?? group.packs.indexOf(p);
+    if (action.to === 'top' || action.to === 'bottom') {
+      const keys = group.packs.map(keyOf);
+      if (action.to === 'top') {pack.after = null; pack.sub = Math.min(...keys) - 1;}
+      else {pack.after = loose.length ? loose.at(-1).id : null; pack.sub = Math.max(...keys) + 1;}
+      return next;
+    }
+    const items = layoutItems(group), idx = items.findIndex(x => x.pack?.id === pack.id), dir = action.dir < 0 ? -1 : 1;
+    const neighbor = items[idx + dir];
+    if (!neighbor) return next;
+    if (neighbor.pack) {
+      const mine = keyOf(pack), theirs = keyOf(neighbor.pack);
+      if (mine === theirs) pack.sub = theirs + dir * 0.5;
+      else {pack.sub = theirs; neighbor.pack.sub = mine;}
+    } else {
+      const li = loose.findIndex(a => a.id === neighbor.athlete.id);
+      pack.after = dir < 0 ? (li > 0 ? loose[li - 1].id : null) : neighbor.athlete.id;
+      const others = group.packs.filter(p => p !== pack && (p.after ?? null) === pack.after).map(keyOf);
+      if (others.length) pack.sub = dir < 0 ? Math.max(...others) + 1 : Math.min(...others) - 1;
+    }
     return next;
   }
   if (action.type === 'SET_GOALS') {
@@ -380,7 +472,11 @@ export function act(state, action, now = Date.now()) {
     return next;
   }
   if (action.type === 'SET_PACKS') {
-    const packs = (action.packs || []).map((p, i) => ({id: String(p.id), name: String(p.name || '').trim() || `Pack ${i + 1}`}));
+    const oldItems = layoutItems(group);
+    const packs = (action.packs || []).map((p, i) => {
+      const old = group.packs.find(x => x.id === String(p.id));
+      return {id: String(p.id), name: String(p.name || '').trim() || `Pack ${i + 1}`, ...(old?.after != null ? {after: old.after} : {}), ...(old?.sub != null ? {sub: old.sub} : {})};
+    });
     if (packs.length > MAX_PACKS) throw new Error(`Use up to ${MAX_PACKS} packs.`);
     if (new Set(packs.map(p => p.id)).size !== packs.length) throw new Error('Pack ids must be unique.');
     group.packs = packs;
@@ -388,6 +484,7 @@ export function act(state, action, now = Date.now()) {
       const wanted = action.assignments && has(action.assignments, athlete.id) ? action.assignments[athlete.id] : athlete.pack;
       athlete.pack = packs.some(p => p.id === wanted) ? wanted : null;
     }
+    reanchorPacks(group, oldItems);
     return next;
   }
   if (action.type === 'SET_MODS') {
@@ -438,13 +535,14 @@ export function act(state, action, now = Date.now()) {
       group.extraReps = (group.extraReps || 0) + 1;
       if (Array.isArray(group.plan) && group.plan.length) {
         const last = group.plan.at(-1);
-        last.restAfterSeconds = last.repeatRestSeconds ?? group.restSeconds;
+        last.restAfterSeconds = last.repeatRestSeconds ?? group.restSeconds; last.restOpen = !!last.repeatRestOpen;
+        if (last.restOpen) last.restAfterSeconds = 0;
         for (const step of group.plan) if (step.blockIndex === last.blockIndex) {
           step.repsInBlock += 1;
           if (!step.blockTitle.endsWith(' + extra reps')) step.blockTitle += ' + extra reps';
         }
         group.plan.push({...last, index: last.index + 1, repInBlock: last.repInBlock + 1,
-          label: `${last.label.replace(/ · extra$/, '')} · extra`, restAfterSeconds: 0});
+          label: `${last.label.replace(/ · extra$/, '')} · extra`, restAfterSeconds: 0, restOpen: false});
       }
     }
     if (group.completed || rep.closed) {
@@ -579,13 +677,14 @@ export function act(state, action, now = Date.now()) {
     case 'RESET_REST':
       if (!group.recovery) throw new Error('No rest is running.');
       if (action.stop) group.recovery = null;
-      else group.recovery = {startedAt: now, durationMs: restDuration(group), manual: group.recovery.manual};
+      else group.recovery = newRecovery(group, now, group.recovery.manual);
       break;
     case 'START_RECOVERY':
-      if (!group.recovery) group.recovery = {startedAt: now, durationMs: restDuration(group), manual: true};
+      if (!group.recovery) group.recovery = newRecovery(group, now, true);
       break;
     case 'ADD_REST':
       if (!group.recovery) throw new Error('Start recovery first.');
+      if (group.recovery.open) break;
       group.recovery.durationMs += number(action.seconds, 30, 0, 86400) * 1000;
       break;
     case 'NEXT_REP':
@@ -678,7 +777,7 @@ export function exportCsv(state) {
 
 
 // ---------- Practice text: groups, goals and per-runner changes ----------
-const COLOR_WORDS = {blue: 'blue', red: 'red', yellow: 'yellow', green: 'blue', orange: 'red', gold: 'yellow'};
+const COLOR_WORDS = {blue: 'blue', red: 'red', yellow: 'yellow', purple: 'purple', violet: 'purple', sprint: 'purple', sprints: 'purple', sprinters: 'purple', green: 'blue', orange: 'red', gold: 'yellow'};
 export const PRACTICE_EXAMPLE = `Distance | blue
 4x400 45s rest, 6min break
 2000, 6min break
@@ -801,7 +900,7 @@ export function createSessionFromPractice(practice, {name = 'Practice', now = Da
   const palette = ['blue', 'red', 'yellow'];
   const groups = practice.groups.map((spec, i) => {
     const sheetColor = spec.sheetColor || palette[i % 3];
-    const group = makeGroup(`group-${i + 1}`, {name: spec.name, workoutText: spec.workoutText, athleteNames: spec.runners.map(r => r.name), sheetColor, color: sheetColor === 'blue' ? 'green' : 'orange'});
+    const group = makeGroup(`group-${i + 1}`, {name: spec.name, workoutText: spec.workoutText, athleteNames: spec.runners.map(r => r.name), sheetColor, color: sheetColor === 'blue' ? 'green' : sheetColor === 'purple' ? 'purple' : 'orange'});
     if (new Set(group.athletes.map(a => a.name)).size !== group.athletes.length) throw new Error(`${spec.name}: each runner’s name should appear once.`);
     for (const runner of spec.runners) applyRunner(group, runner);
     const seen = new Map();
@@ -832,7 +931,7 @@ export function buildSheetPayload(state, groupId) {
   return {
     action: 'results', md, date: `${created.getFullYear()}-${md}`, session: state.name,
     group: {key: group.name, name: group.name, color: group.sheetColor || 'blue', workout, complete: !!group.completed,
-      cols: Array.from({length: n}, (_, i) => ({label: String(getStep(group, i)?.distance ?? group.distance)})),
+      cols: Array.from({length: n}, (_, i) => ({label: group.noDistance && group.mode === 'free' ? `Rep ${i + 1}` : String(getStep(group, i)?.distance ?? group.distance)})),
       athletes: group.athletes.map(a => ({
         name: a.name, goal: goalString(group, a), pack: (group.packs || []).find(p => p.id === a.pack)?.name ?? '',
         cells: Array.from({length: n}, (_, i) => {

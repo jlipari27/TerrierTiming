@@ -456,3 +456,14 @@ td.goal-cell { color: #6b7891; font-size: 13px; white-space: nowrap; font-varian
 .tpl-row .btn { min-height: 38px; padding: 6px 12px; }
 .tab-pick { display: flex; flex-wrap: wrap; gap: 6px; }
 #modal .workout-editor { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 14px; }
+
+/* ---- v5: coach feedback ---- */
+.pp-dot.purple { background: #b4a7d6; }
+.group-tab .pp-dot { display: inline-block; width: 9px; height: 9px; margin-right: 4px; vertical-align: 0; }
+.rest-chip { flex-shrink: 0; padding: 0 6px; border-radius: 4px; background: #fff4d6; color: #8a5a00; font-size: 11.5px; font-weight: 750; line-height: 1.5; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rest-chip.rest-done { background: #dff5e8; color: #0b6b43; }
+.split-live { flex-shrink: 0; padding: 0 5px; border-radius: 4px; border: 1px dashed #8ca5e9; color: #1644c8; font-size: 11.5px; font-weight: 700; line-height: 1.4; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.big-timer.rest-open { color: #ffd98a; }
+.check-line { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 14px; font-weight: 600; }
+.check-line input { width: 18px; height: 18px; }
+.timer-actions .btn { min-width: 0; }
